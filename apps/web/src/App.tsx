@@ -3,9 +3,11 @@ import {
   EMAIL_SIGN_UP_PATH,
   INVITATION_PATH,
   NAVIGATION_SLOTS,
+  pageAfterWelcome,
   PASSWORD_RESET_PATH,
   SIGN_UP_PATH,
   TRANSFER_PATH,
+  WELCOME_PATH,
   type Account,
   type AccountDeletion,
   type Bootstrap,
@@ -22,6 +24,7 @@ import { PasswordResetPage } from "@/components/password-reset-page";
 import { SetupPage } from "@/components/setup-page";
 import { SignInPage } from "@/components/sign-in-page";
 import { TransferPage } from "@/components/transfer-page";
+import { WelcomePage } from "@/components/welcome-page";
 import { ACCOUNT_DELETED } from "@/components/workspace/delete-account";
 import { Workspace, loadPageAhead } from "@/components/workspace/workspace";
 import { AccountContext } from "@/hooks/use-account";
@@ -51,19 +54,25 @@ const isSameAccount = (a: Account, b: Account) =>
   a.hideTranslationButtons === b.hideTranslationButtons &&
   a.customStyles === b.customStyles &&
   a.restrictRoomCreation === b.restrictRoomCreation &&
+  a.restrictChannelMentions === b.restrictChannelMentions &&
+  a.restrictEveryoneMention === b.restrictEveryoneMention &&
+  a.warnBeforeNotifying === b.warnBeforeNotifying &&
   a.logo === b.logo &&
   a.customDomain === b.customDomain &&
   a.joinLink === b.joinLink &&
   a.openSignUp === b.openSignUp &&
   a.memberfulJoin === b.memberfulJoin &&
   a.memberfulSignIn === b.memberfulSignIn &&
+  a.ssoJoin === b.ssoJoin &&
+  a.ssoSignIn === b.ssoSignIn &&
   a.emailDomainSignUp === b.emailDomainSignUp &&
   a.emailDomains.length === b.emailDomains.length &&
   a.emailDomains.every((domain, index) => domain === b.emailDomains[index]) &&
   NAVIGATION_SLOTS.every((slot) => a.navigationIcons[slot] === b.navigationIcons[slot]) &&
   a.huddles === b.huddles &&
   a.huddleCameras === b.huddleCameras &&
-  a.huddleScreens === b.huddleScreens;
+  a.huddleScreens === b.huddleScreens &&
+  a.huddleVideo === b.huddleVideo;
 
 export function App() {
   // Undefined until the server says whether Ember is set up.
@@ -78,6 +87,7 @@ export function App() {
   const atEmailSignUp = useIsAt(EMAIL_SIGN_UP_PATH);
   const atTransfer = useIsAt(TRANSFER_PATH);
   const atOutsideConnect = useIsAt(OUTSIDE_AUTHORIZE_PATH);
+  const atWelcome = useIsAt(WELCOME_PATH);
   const signingOut = useRef(false);
   // Before any page has fields, so even one focused as it opens is selected.
   useSelectOnEntry();
@@ -193,6 +203,11 @@ export function App() {
     navigate("/", { replace: true });
     setMe(user);
   }, []);
+  // Someone welcomed goes on to the page they signed in from, as its address says.
+  const welcomed = useCallback((user: Me) => {
+    navigate(pageAfterWelcome(location.search, location.origin), { replace: true });
+    setMe(user);
+  }, []);
   const setUp = useCallback(({ user }: NewWorkspace) => {
     setMe(user);
     setWorkspace((workspace) => workspace && { ...workspace, setup: "complete" });
@@ -207,12 +222,14 @@ export function App() {
   // Not flashing yet, so a flash the last page left shows on this one once it's known.
   if (workspace === undefined) return <main aria-busy="true" className="min-h-dvh bg-surface" />;
   // A sign-in link signs in whoever opens it, even someone signed in as someone else.
-  const showsWorkspace = workspace.setup === "complete" && me !== null && !atSignIn && !atPasswordReset && !atTransfer && !atOutsideConnect;
+  const showsWorkspace = workspace.setup === "complete" && me !== null && !atSignIn && !atPasswordReset && !atTransfer && !atOutsideConnect && !atWelcome;
   const page = () => {
     if (workspace.setup === "pending") return <SetupPage placeholders={workspace.setupPlaceholders} access={workspace.setupAccess} onSetUp={setUp} />;
     if (atTransfer) return <TransferPage />;
     // An AI app's request to connect is answered on a page of its own, by someone signed in: anyone else signs in first, and comes back to it.
     if (atOutsideConnect && me !== null) return <OutsideConnectPage me={me} workspace={workspace} />;
+    // Someone new who joined with Memberful chooses how people see them, signed in, before the workspace shows.
+    if (atWelcome && me !== null) return <WelcomePage me={me} workspace={workspace} onWelcomed={welcomed} />;
     // Someone else's workspace starts afresh, with their own rooms and sockets.
     if (showsWorkspace)
       return (

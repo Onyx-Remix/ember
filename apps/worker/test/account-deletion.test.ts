@@ -50,7 +50,8 @@ import {
 } from "./support";
 
 // Delete my account, on your profile, which Apple asks of every app with accounts: everything removing
-// someone does, then their messages and boosts in every room, and everything else of them but their row.
+// someone does, then what they've scheduled, their messages and boosts in every room, and everything else
+// of them but their row.
 
 const bindings = env as unknown as Env;
 
@@ -109,7 +110,7 @@ async function listed(viewer: Session, userId: UserId): Promise<DirectoryUser> {
 /** What's stored of someone. */
 const stored = async (userId: UserId) =>
   ((await workspaceSql(
-    `SELECT name, email_address, password_digest, bio, avatar_key, avatar_variant, role, status, deleted_at, updated_at FROM users WHERE id = ?`,
+    `SELECT name, email_address, password_digest, username, bio, avatar_key, avatar_variant, role, status, deleted_at, updated_at FROM users WHERE id = ?`,
     userId,
   )) as Array<Record<string, string | number | null>>)[0]!;
 
@@ -176,10 +177,13 @@ describe("Delete my account", () => {
     expect(await signedIn(administrator)).toBe(true);
   });
 
-  it("leaves nothing of you but your row, deactivated and named Deleted person, without an email address, password, bio or avatar", async () => {
+  it("leaves nothing of you but your row, deactivated and named Deleted person, without an email address, password, username, bio or avatar", async () => {
     const administrator = await setUp();
     const member = await join(grace);
-    await workspaceSql("UPDATE users SET bio = 'Admiral', avatar_key = 'avatars/grace', avatar_variant = 'webp', assistant_model = 'some-model', role = 1 WHERE id = ?", member.user.id);
+    await workspaceSql(
+      "UPDATE users SET username = 'amazing.grace', bio = 'Admiral', avatar_key = 'avatars/grace', avatar_variant = 'webp', assistant_model = 'some-model', role = 1 WHERE id = ?",
+      member.user.id,
+    );
     await bindings.FILES!.put("avatars/grace", recordedImage("moon-thumb.jpg"));
 
     await deleteGraces(member);
@@ -188,6 +192,7 @@ describe("Delete my account", () => {
       name: DELETED_PERSON_NAME,
       email_address: null,
       password_digest: null,
+      username: null,
       bio: null,
       avatar_key: null,
       avatar_variant: null,
@@ -195,7 +200,9 @@ describe("Delete my account", () => {
       status: 1,
     });
     expect(row.deleted_at).toBe(row.updated_at);
-    expect(await listed(administrator, member.user.id)).toMatchObject({ id: member.user.id, name: DELETED_PERSON_NAME, bio: null, role: "member", status: "deactivated" });
+    const listing = await listed(administrator, member.user.id);
+    expect(listing).toMatchObject({ id: member.user.id, name: DELETED_PERSON_NAME, bio: null, role: "member", status: "deactivated" });
+    expect(listing).not.toHaveProperty("username");
     // R2 deletes the avatar they had.
     await vi.waitFor(async () => expect(await bindings.FILES!.head("avatars/grace")).toBeNull(), { timeout: 5_000 });
     expect(await workspaceSql("SELECT object_key FROM pending_picture_deletions")).toEqual([]);
@@ -230,6 +237,19 @@ describe("Delete my account", () => {
     const again = await join(grace);
     expect(again.user.id).not.toBe(member.user.id);
     expect(await stored(again.user.id)).toMatchObject({ name: grace.name, email_address: grace.emailAddress, status: 0 });
+  });
+
+  it("frees your username, so someone else can take it", async () => {
+    const administrator = await setUp();
+    const member = await join(grace);
+    const takeGrace = (session: Session) =>
+      api("/api/users/me/profile", { method: "PATCH", headers: { Cookie: session.cookie }, body: JSON.stringify({ username: "grace" }) });
+    expect((await takeGrace(member)).status).toBe(200);
+    expect((await takeGrace(administrator)).status).toBe(422);
+
+    await deleteGraces(member);
+    expect((await takeGrace(administrator)).status).toBe(200);
+    expect(await listed(administrator, administrator.user.id)).toMatchObject({ username: "grace" });
   });
 
   it("refuses without your password, or with one that isn't yours, deleting nothing", async () => {
@@ -415,6 +435,24 @@ describe("What deleting your account deletes", () => {
       { id: parent.id, creator_name: DELETED_PERSON_NAME, body: "", deleted: 1 },
     ]);
     expect(await written(lobby, linus.user.id)).toEqual([answer.id]);
+  });
+
+  it("forgets the messages you scheduled, so none of them is sent, or kept", async () => {
+    await setUp();
+    const member = await join(grace);
+    const lobby = await freshRoom("lobby");
+    const graceInLobby = await connect(lobby, member);
+    const parent = await post(graceInLobby, "Plans?");
+    for (const thread of [{}, { parentId: parent.id }]) {
+      graceInLobby.send({ type: "message.schedule", clientMessageId: crypto.randomUUID(), body: "<p>Later</p>", sendAt: new Date(Date.now() + 60_000).toISOString(), ...thread });
+      await graceInLobby.next("scheduled");
+    }
+    const scheduled = () => roomSql(lobby, "SELECT count(*) AS count FROM scheduled_messages WHERE room_id = ?", lobby);
+    expect(await scheduled()).toEqual([{ count: 2 }]);
+
+    await deleteGraces(member);
+    await purged();
+    expect(await scheduled()).toEqual([{ count: 0 }]);
   });
 
   it("deletes a page of messages, then of boosts, at a time, each a change of its own that tabs catch up on", async () => {
